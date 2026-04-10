@@ -4,6 +4,9 @@ from textual.widgets import Header, Footer, Static, Label, Markdown
 from textual.message import Message
 import sqlite3
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from core.telemetry import get_system_metrics
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'database', 'odysseus.db')
 
@@ -41,11 +44,13 @@ class KanbanColumn(VerticalScroll):
         yield Label(f"--- {self.status_name.upper()} ---", classes="column-header")
 
 class TaskDetailPanel(VerticalScroll):
-    """The side panel that shows detailed execution logs."""
+    """The side panel that shows execution logs AND Telemetry."""
     def compose(self) -> ComposeResult:
+        yield Label("Odysseus Telemetry", id="telemetry-header")
+        yield Label("CPU: --% | RAM: --GB", id="telemetry-data")
         yield Label("Task Details", id="detail-header")
-        yield Markdown("Click a task card on the left to view its execution logs and details here.", id="detail-content")
-
+        yield Markdown("Click a task card on the left to view its details here.", id="detail-content")
+        
 class OdysseusDashboard(App):
     """The main TUI application."""
     
@@ -109,6 +114,19 @@ class OdysseusDashboard(App):
 
     def on_mount(self) -> None:
         self.load_tasks()
+        # The telemetry timer we added earlier
+        self.set_interval(2.0, self.update_telemetry)
+        # --- The Board refresh timer ---
+        self.set_interval(1.0, self.update_board)
+        
+    def update_board(self) -> None:
+        """Wipes the board and redraws the cards to show live movement."""
+        # 1. Remove all existing cards from the UI so they don't stack infinitely
+        for card in self.query(TaskCard):
+            card.remove()
+        
+        # 2. Fetch the fresh database state and redraw them
+        self.load_tasks()
 
     def load_tasks(self) -> None:
         conn = sqlite3.connect(DB_PATH)
@@ -128,18 +146,42 @@ class OdysseusDashboard(App):
             if status in columns:
                 columns[status].mount(TaskCard(task_id, title, agent))
 
+    def update_telemetry(self) -> None:
+        """Fetches new system metrics and updates the UI."""
+        metrics = get_system_metrics()
+        telemetry_label = self.query_one("#telemetry-data", Label)
+        telemetry_label.update(
+            f"CPU: {metrics['cpu']}%\n"
+            f"RAM: {metrics['ram_used']} / {metrics['ram_total']} GB ({metrics['ram_percent']}%)\n"
+            f"Disk: {metrics['disk']}%"
+        )
+
     def on_task_card_selected(self, message: TaskCard.Selected) -> None:
         """Catches the custom click message from the TaskCard."""
-        # Query the database for the specific task details
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        
+        # 1. Get Task Info
         cursor.execute("SELECT title, description, status, assigned_agent FROM tasks WHERE id = ?", (message.task_id,))
         task = cursor.fetchone()
+        
+        # 2. Get Execution Logs for this task
+        cursor.execute("SELECT agent_name, thought FROM execution_logs WHERE task_id = ? ORDER BY timestamp ASC", (message.task_id,))
+        logs = cursor.fetchall()
+        
         conn.close()
 
         if task:
             title, description, status, agent = task
-            # Format the output as Markdown
+            
+            # Format the logs
+            log_text = ""
+            if logs:
+                for log_agent, thought in logs:
+                    log_text += f"**[{log_agent}]**\n{thought}\n\n---\n"
+            else:
+                log_text = "*(Awaiting agent execution...)*"
+
             markdown_text = f"""
 # {title}
 **Status:** {status} | **Agent:** {agent}
@@ -149,12 +191,13 @@ class OdysseusDashboard(App):
 
 ***
 ### Execution Logs
-*(Awaiting agent routing...)*
+{log_text}
             """
             
-            # Update the side panel content
             detail_view = self.query_one("#detail-content", Markdown)
             detail_view.update(markdown_text)
+            
+    
 
 if __name__ == "__main__":
     app = OdysseusDashboard()
