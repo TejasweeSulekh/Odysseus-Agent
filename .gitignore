@@ -1,0 +1,24 @@
+# Environments
+.venv/
+env/
+venv/
+
+# Python caching
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database (Never commit the actual state machine!)
+database/*.db
+database/*.sqlite3
+
+# Environment variables (For future API keys or port configs)
+.env
+.env.local
+
+# Textual logs
+textual.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
