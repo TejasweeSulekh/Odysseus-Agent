@@ -1,9 +1,11 @@
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.containers import Horizontal, VerticalScroll, Vertical
-from textual.widgets import Header, Footer, Static, Label, Markdown, Input, RichLog
+from textual.widgets import Header, Footer, Static, Label, Markdown, Input, RichLog, Button
 from textual.message import Message
 from textual import work
+from textual.reactive import reactive
+from rich.markdown import Markdown as RichMarkdown # NEW: Imports the Rich Markdown parser
 import sqlite3
 import os
 import sys
@@ -50,22 +52,88 @@ class TaskDetailPanel(VerticalScroll):
         yield Label("Odysseus Telemetry", id="telemetry-header")
         yield Label("CPU: --% | RAM: --GB", id="telemetry-data")
         yield Label("Task Details", id="detail-header")
-        yield Markdown("Click a task card on the left to view its details here.", id="detail-content")
+        yield Markdown("*(Awaiting telemetry data...)*", id="detail-content")
+
+class BlinkingCursor(Label):
+    """A lightweight, CPU-safe thinking indicator."""
+    cursor_visible = reactive(True)
+
+    def on_mount(self) -> None:
+        self.set_interval(0.5, self.toggle_cursor)
+
+    def toggle_cursor(self) -> None:
+        self.cursor_visible = not self.cursor_visible
+        # Sleek, brutalist loading state
+        self.update(f"[bold #ff00ff]Odysseus.sys.compute(){' █' if self.cursor_visible else '  '}[/bold #ff00ff]")
 
 # --- SCREENS ---
 
 class ChatScreen(Screen):
     """The default conversational interface."""
+    
+    is_agentic_mode = reactive(False)
+
     def compose(self) -> ComposeResult:
         yield Header()
         yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
-        yield Input(placeholder="Talk to Odysseus or give an engineering command...", id="chat-input")
+        
+        with Horizontal(id="input-container"):
+            yield Input(placeholder="Talk to Odysseus...", id="chat-input")
+            yield Button("MODE: CHAT", id="mode-toggle", variant="primary")
+            
         yield Footer()
 
     def on_mount(self) -> None:
         log = self.query_one(RichLog)
-        log.write("[bold green]=== ODYSSEUS OS ONLINE ===[/bold green]")
-        log.write("[dim]System initialized. Awaiting commands.[/dim]\n")
+        log.write("[bold #00ff00]=== ODYSSEUS OS ONLINE ===[/bold #00ff00]")
+        log.write("[dim]System initialized. Ready for input.[/dim]\n")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handles the Mode Toggle."""
+        if event.button.id == "mode-toggle":
+            self.is_agentic_mode = not self.is_agentic_mode
+            if self.is_agentic_mode:
+                event.button.label = "MODE: AGENTIC"
+                event.button.variant = "warning"
+                self.query_one(Input).placeholder = "Issue an engineering command..."
+            else:
+                event.button.label = "MODE: CHAT"
+                event.button.variant = "primary"
+                self.query_one(Input).placeholder = "Talk to Odysseus..."
+
+    @work
+    async def process_command(self, user_text: str) -> None:
+        """Handles the async LLM call and UI updates without freezing the screen."""
+        log = self.query_one(RichLog)
+        chat_input = self.query_one(Input)
+        
+        # 1. Disable the input box so its cursor stops blinking
+        chat_input.disabled = True
+        
+        # 2. Mount the pulsing cursor
+        cursor = BlinkingCursor()
+        self.mount(cursor)
+        
+        # Force the mode onto the user's text if Agentic is active
+        command_payload = user_text
+        if self.is_agentic_mode and not user_text.upper().startswith("BUILD") and not user_text.upper().startswith("WRITE"):
+             command_payload = f"BUILD THIS: {user_text}"
+
+        reply = await orchestrate(command_payload)
+        
+        # 3. Unmount the cursor once finished
+        cursor.remove()
+        
+        # 4. Route logic & Render Markdown cleanly
+        if "[SYSTEM] Agentic Mode Triggered" in reply:
+            self.app.switch_screen("kanban")
+        else:
+            log.write(RichMarkdown(reply)) # Render as native Markdown!
+            log.write("\n") # Add spacing after the output
+            
+        # 5. Re-enable the input box and refocus it
+        chat_input.disabled = False
+        chat_input.focus()
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         user_text = event.value
@@ -73,17 +141,10 @@ class ChatScreen(Screen):
         
         event.input.value = ""
         log = self.query_one(RichLog)
+        log.write(f"[bold #58a6ff]YOU:[/bold #58a6ff] {user_text}")
         
-        log.write(f"[bold cyan]YOU:[/bold cyan] {user_text}")
-        log.write("[dim italic]Odysseus is thinking...[/dim italic]")
-        
-        # Route to Supervisor
-        reply = await orchestrate(user_text)
-        log.write(f"[bold yellow]ODYSSEUS:[/bold yellow] {reply}\n")
-        
-        # Trigger Screen Switch if tasks were generated
-        if "[SYSTEM] Agentic Mode Triggered" in reply:
-            self.app.push_screen("kanban")
+        # Fire the background worker
+        self.process_command(user_text)
 
 class KanbanScreen(Screen):
     """The Agentic Dashboard mode."""
@@ -96,7 +157,6 @@ class KanbanScreen(Screen):
                 yield KanbanColumn("Review")
                 yield KanbanColumn("Done")
             yield TaskDetailPanel(id="side-panel")
-        yield Input(placeholder="Inject a hint or chat while agents work...", id="kanban-input")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -123,7 +183,6 @@ class KanbanScreen(Screen):
             "Done": self.query("KanbanColumn.column-done").first(),
         }
 
-        # --- NEW: Completion Detection Logic ---
         all_done = True
         has_tasks = False
 
@@ -134,31 +193,25 @@ class KanbanScreen(Screen):
             if status in columns:
                 columns[status].mount(TaskCard(task_id, title, agent))
 
-        # If there are tasks and they are ALL in the Done column, trigger the hook
         if has_tasks and all_done:
-            # Check a flag to ensure we don't trigger this 10 times a second
             if not hasattr(self, "is_synthesizing") or not self.is_synthesizing:
                 self.is_synthesizing = True
                 self.trigger_synthesis()
 
     @work
     async def trigger_synthesis(self) -> None:
-        """Transitions back to Chat and asks the Supervisor for a summary."""
-        # 1. Safely switch back to chat
+        """Pops the screen back to Chat and asks the Supervisor for a summary."""
         self.app.switch_screen("chat")
         chat_screen = self.app.get_screen("chat")
         chat_log = chat_screen.query_one(RichLog)
         
-        # 2. Show a loading state
         chat_log.write("\n[dim italic]Tasks complete. Odysseus is synthesizing the results...[/dim italic]")
         
-        # 3. Call the hidden system hook
         reply = await orchestrate("[SYSTEM] TASK_BATCH_COMPLETE")
         
-        # 4. Display the final summary
-        chat_log.write(f"[bold yellow]ODYSSEUS:[/bold yellow] {reply}\n")
-        
-        # 5. Reset the flag
+        # Render the final synthesized text as pure Markdown
+        chat_log.write(RichMarkdown(reply))
+        chat_log.write("\n")
         self.is_synthesizing = False
 
     def update_telemetry(self) -> None:
@@ -191,21 +244,6 @@ class KanbanScreen(Screen):
             markdown_text = f"# {title}\n**Status:** {status} | **Agent:** {agent}\n***\n### Description\n{description}\n***\n### Execution Logs\n{log_text}"
             self.query_one("#detail-content", Markdown).update(markdown_text)
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        user_text = event.value
-        if not user_text.strip(): return
-        
-        event.input.value = ""
-        reply = await orchestrate(user_text)
-        
-        # If the user asks a normal question, switch back to chat mode to show the answer
-        if "[SYSTEM] Agentic Mode Triggered" not in reply:
-            self.app.switch_screen("chat")
-            chat_screen = self.app.get_screen("chat")
-            chat_log = chat_screen.query_one(RichLog)
-            chat_log.write(f"[bold cyan]YOU:[/bold cyan] {user_text}")
-            chat_log.write(f"[bold yellow]ODYSSEUS:[/bold yellow] {reply}\n")
-
 
 # --- MAIN APP ---
 
@@ -213,14 +251,41 @@ class OdysseusDashboard(App):
     CSS = """
     Screen {
         layout: vertical;
+        background: #0d1117; 
     }
     #chat-log {
         height: 1fr;
-        border: solid green;
+        border: panel #00ff00; 
         margin: 1;
         padding: 1;
-        background: $surface;
+        background: #161b22;
     }
+    
+    #input-container {
+        layout: horizontal;
+        height: auto;
+        dock: bottom;
+        margin: 0 1 1 1;
+    }
+    #chat-input {
+        width: 1fr;
+        border: tall #00ff00;
+    }
+    #chat-input:disabled {
+        opacity: 0.5; /* Dims the input bar while thinking */
+    }
+    #mode-toggle {
+        width: auto;
+        margin-left: 1;
+        min-width: 18;
+    }
+    
+    BlinkingCursor {
+        dock: bottom;
+        margin-left: 2;
+        margin-bottom: 4; 
+    }
+
     #board-container {
         height: 1fr;
         layout: horizontal;
@@ -231,43 +296,55 @@ class OdysseusDashboard(App):
     }
     #side-panel {
         width: 30%;
-        border-left: solid green;
+        border-left: vkey #00ff00;
         padding: 1 2;
-        background: $surface;
+        background: #161b22;
     }
     #detail-header {
         text-style: bold;
-        color: yellow;
+        color: #ff00ff; 
         padding-bottom: 1;
-        border-bottom: solid green;
+        border-bottom: solid #00ff00;
         width: 100%;
     }
     KanbanColumn {
         width: 1fr;
         height: 1fr;
-        border: solid green;
+        border: solid #30363d;
         margin: 1 1;
         padding: 1;
     }
     .column-header {
         text-align: center;
         text-style: bold;
+        color: #58a6ff; 
         padding-bottom: 1;
     }
+    
     TaskCard {
-        border: panel cyan;
+        border: panel #58a6ff;
         margin-bottom: 1;
         padding: 1;
-        background: $panel;
+        background: #21262d;
     }
     TaskCard:hover {
-        background: $accent;
+        background: #30363d;
+        border: panel #00ff00;
     }
     .card-title { text-style: bold; }
-    .card-agent { color: yellow; }
-    Input {
-        dock: bottom;
-        margin: 0 1 1 1;
+    .card-agent { color: #f0883e; } 
+    
+    Markdown {
+        margin: 1 0;
+    }
+    MarkdownH1, MarkdownH2, MarkdownH3 {
+        color: #00ff00;
+        text-style: bold;
+    }
+    MarkdownFence {
+        border: solid #e3b341; 
+        background: #0d1117;
+        margin: 1 0;
     }
     """
     
@@ -275,7 +352,6 @@ class OdysseusDashboard(App):
     BINDINGS = [("d", "toggle_dark", "Toggle dark mode"), ("q", "quit", "Quit")]
 
     def on_mount(self) -> None:
-        # Start in Chat Mode
         self.push_screen("chat")
 
 if __name__ == "__main__":
