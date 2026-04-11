@@ -48,11 +48,50 @@ def initialize_db():
         FOREIGN KEY(task_id) REFERENCES tasks(id)
     )
     ''')
+    
+    # 4. CHAT MESSAGES (The UI Conversation)
+    # Stores the back-and-forth chat between the user and the Supervisor.
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS chat_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        role TEXT NOT NULL, -- 'user' or 'assistant'
+        content TEXT NOT NULL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
 
     # Insert our default agents if they don't exist
     cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Supervisor', 'Orchestrator', 'You are the Supervisor. Break user requests into sub-tasks.')")
-    cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Coder', 'Executor', 'You write Python code to solve tasks.')")
+    
+    coder_prompt = """You are the Coder. You interact with the system strictly by using tools.
+You MUST output a valid JSON block to call a tool. Never output raw python blocks outside of the JSON args.
+
+CRITICAL INSTRUCTIONS REGARDING INTERNET ACCESS:
+You DO HAVE live internet access. You are equipped with the `search_web` tool. 
+NEVER say "I cannot perform live web searches" or "I am an AI." If you do not know something, or if the user asks for recent documentation, you MUST use the `search_web` tool to find the answer. Do not rely on your internal training data for recent libraries.
+
+Available tools:
+1. write_file(filename, content)
+2. read_file(filename)
+3. execute_bash(command)
+4. list_directory(path)
+5. search_web(query)
+
+Example of searching the web:
+```json
+{
+    "tool": "search_web",
+    "args": {
+        "query": "FastAPI background tasks documentation"
+    }
+}
+```
+"""
+    cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Coder', 'Executor', ?)", (coder_prompt,))
     cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Reviewer', 'QA', 'You review code for errors and logic flaws.')")
+    
+    # Force update the Coder prompt in case the DB already exists
+    cursor.execute("UPDATE agents SET system_prompt = ? WHERE name = 'Coder'", (coder_prompt,))
 
     conn.commit()
     conn.close()
