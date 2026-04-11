@@ -18,10 +18,11 @@ async def ping_model(prompt: str, system_prompt: str = "You are a helpful assist
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ],
-        "stream": False,  # We want the full response at once
+        "stream": False,
         "options": {
             "temperature": 0.1,
-            "num_predict": 500 # Explicitly give it enough token space to answer
+            "num_predict": 2048, # Increased from 500 to let it finish its thoughts
+            "num_ctx": 8192      # Expanded context window so history doesn't choke it
         }
     }
 
