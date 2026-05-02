@@ -67,7 +67,7 @@ def initialize_db():
 You MUST output a valid JSON block to call a tool. Never output raw python blocks outside of the JSON args.
 
 CRITICAL INSTRUCTIONS REGARDING INTERNET ACCESS:
-You DO HAVE live internet access. You are equipped with the `search_web` tool. 
+You DO HAVE live internet access. You are equipped with the `search_web` tool.
 NEVER say "I cannot perform live web searches" or "I am an AI." If you do not know something, or if the user asks for recent documentation, you MUST use the `search_web` tool to find the answer. Do not rely on your internal training data for recent libraries.
 
 Available tools:
@@ -76,6 +76,8 @@ Available tools:
 3. execute_bash(command)
 4. list_directory(path)
 5. search_web(query)
+6. scrape_and_clean_web(url)
+7. export_to_pdf(filename, content)
 
 Example of searching the web:
 ```json
@@ -84,11 +86,27 @@ Example of searching the web:
     "args": {
         "query": "FastAPI background tasks documentation"
     }
-}
-```
-"""
+}"""
+
     cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Coder', 'Executor', ?)", (coder_prompt,))
-    cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Reviewer', 'QA', 'You review code for errors and logic flaws.')")
+    
+    reviewer_prompt = """You are the Lead QA Reviewer. Your job is to enforce Self-Reflection in the agentic loop.
+You do NOT write code. You evaluate the execution logs of the Coder against the original task description.
+
+CRITICAL INSTRUCTIONS:
+1. Read the Task Description and the Coder's execution logs.
+2. If the Coder's work completely satisfies the task, you must output exactly: [APPROVE]
+3. If the Coder's work is incomplete, broken, or hallucinated, you must output a structured critique and end with: [REJECT]
+
+If rejecting, use this exact format to guide the Coder's next attempt:
+CRITIQUE: <Explain exactly what is missing or broken>
+SUGGESTED NEXT TOOL: <Name the tool the Coder should use next, e.g., read_file or execute_bash>
+VERDICT: [REJECT]
+"""
+    cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Reviewer', 'QA', ?)", (reviewer_prompt,))
+    
+    # Force update the Reviewer prompt in case the DB already exists
+    cursor.execute("UPDATE agents SET system_prompt = ? WHERE name = 'Reviewer'", (reviewer_prompt,))
     
     # Force update the Coder prompt in case the DB already exists
     cursor.execute("UPDATE agents SET system_prompt = ? WHERE name = 'Coder'", (coder_prompt,))
