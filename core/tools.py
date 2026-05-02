@@ -2,6 +2,7 @@ import os
 import subprocess
 import json
 import warnings
+from core.thick_tools import scrape_and_clean_web, export_to_pdf
 
 # Suppress the noisy renaming warning from the duckduckgo backend
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
@@ -102,6 +103,11 @@ def process_tool_call(tool_name: str, tool_args: dict) -> str:
         return list_directory(tool_args.get("path", "."))
     elif tool_name == "search_web":
         return search_web(tool_args.get("query", ""))
+    # --- NEW THICK TOOLS ---
+    elif tool_name == "scrape_and_clean_web":
+        return scrape_and_clean_web(tool_args.get("url", ""))
+    elif tool_name == "export_to_pdf":
+        return export_to_pdf(tool_args.get("filename", ""), tool_args.get("content", ""))
     else:
         return f"ERROR: Unknown tool '{tool_name}'."
     
