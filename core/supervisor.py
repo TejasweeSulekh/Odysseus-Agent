@@ -25,6 +25,7 @@ AVAILABLE TOOLS:
 - read_file(filename)
 - scrape_and_clean_web(url)
 - export_to_pdf(filename, content)
+- query_memory(query)
 
 To use a tool, use this exact format:
 ```json

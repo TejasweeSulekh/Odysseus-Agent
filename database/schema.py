@@ -59,6 +59,19 @@ def initialize_db():
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+    
+    # 5. SESSION METRICS (LLM Telemetry)
+    # Tracks inference speed and token usage for enterprise observability.
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS session_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        endpoint TEXT,
+        eval_count INTEGER,
+        eval_duration_sec REAL,
+        tokens_per_sec REAL,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
 
     # Insert our default agents if they don't exist
     cursor.execute("INSERT OR IGNORE INTO agents (name, role, system_prompt) VALUES ('Supervisor', 'Orchestrator', 'You are the Supervisor. Break user requests into sub-tasks.')")
@@ -78,6 +91,7 @@ Available tools:
 5. search_web(query)
 6. scrape_and_clean_web(url)
 7. export_to_pdf(filename, content)
+8. query_memory(query)
 
 Example of searching the web:
 ```json
