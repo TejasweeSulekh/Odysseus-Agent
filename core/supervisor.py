@@ -104,8 +104,8 @@ async def orchestrate(user_request: str):
 Read the execution logs below and present the FINAL RESULT to the user.
 
 CRITICAL INSTRUCTION: Do NOT just say "the task is complete." You must actually show the user the work that was produced! 
-- If the agents wrote a file, output the exact contents of that file in a markdown code block.
-- If they performed research, present the actual research findings.
+- If the agents wrote a file, present the findings using native Markdown formatting (use # for headers, ** for bold, etc.).
+- DO NOT wrap your entire response in a single ``` code block. Allow the Markdown to render naturally.
 - Cut the fluff. Deliver the payload.
 
 EXECUTION LOGS:
