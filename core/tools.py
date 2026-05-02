@@ -2,6 +2,7 @@ import os
 import subprocess
 import json
 import warnings
+from core.memory import query_memory
 from core.thick_tools import scrape_and_clean_web, export_to_pdf
 
 # Suppress the noisy renaming warning from the duckduckgo backend
@@ -108,6 +109,8 @@ def process_tool_call(tool_name: str, tool_args: dict) -> str:
         return scrape_and_clean_web(tool_args.get("url", ""))
     elif tool_name == "export_to_pdf":
         return export_to_pdf(tool_args.get("filename", ""), tool_args.get("content", ""))
+    elif tool_name == "query_memory":
+        return query_memory(tool_args.get("query", ""))
     else:
         return f"ERROR: Unknown tool '{tool_name}'."
     
