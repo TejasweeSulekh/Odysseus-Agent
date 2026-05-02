@@ -3,10 +3,36 @@ import json
 import sqlite3
 import os
 import re
-from core.llm_engine import ping_model
 import sys
 
+# --- Add project root to sys.path before core imports ---
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.llm_engine import ping_model
+from core.tools import process_tool_call
+
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'database', 'odysseus.db')
+
+FAST_PATH_PROMPT = """You are Odysseus, a fast and helpful AI OS assistant.
+You have access to tools. 
+
+If you DO NOT need a tool, output your final answer directly in plain text/markdown.
+If you DO need a tool, output STRICTLY a JSON block and nothing else.
+
+AVAILABLE TOOLS:
+- search_web(query)
+- list_directory(path)
+- read_file(filename)
+- scrape_and_clean_web(url)
+- export_to_pdf(filename, content)
+
+To use a tool, use this exact format:
+```json
+{
+    "tool": "list_directory",
+    "args": {"path": "."}
+}
+"""
 
 SUPERVISOR_PROMPT = """You are Odysseus, the master AI OS Supervisor.
 Your ONLY job is to classify the user's intent and output a STRICT JSON object.
@@ -84,6 +110,42 @@ def extract_task_json(text):
         return potential_json
         
     return None
+
+
+async def fast_react_loop(user_command: str, history: str) -> str:
+    """Executes an in-memory Reason+Act loop."""
+    context = f"Recent History:\n{history}\n\nUSER COMMAND: {user_command}\n"
+    max_steps = 3
+    
+    for step in range(max_steps):
+        print(f"  [Fast-Path] Loop {step+1}/{max_steps} - Thinking...")
+        response = await ping_model(context, FAST_PATH_PROMPT)
+        
+        # Check if the model outputted a markdown JSON block (tool call)
+        if "```json" in response:
+            try:
+                # Extract and parse the JSON
+                json_text = response.split("```json")[1].split("```")[0].strip()
+                tool_data = json.loads(json_text)
+                
+                tool_name = tool_data.get("tool")
+                tool_args = tool_data.get("args", {})
+                
+                print(f"  [Fast-Path] Action Triggered: {tool_name}({tool_args})")
+                observation = process_tool_call(tool_name, tool_args)
+                
+                # Append the execution result to the context and let it loop again
+                context += f"\nAgent: {response}\nObservation: {observation}\n"
+                
+            except Exception as e:
+                # Healing: If the JSON is broken, feed the error back to the model
+                print(f"  [Fast-Path] Syntax Error: {e}")
+                context += f"\nAgent: {response}\nSystem Error: Invalid JSON syntax ({str(e)}). Fix it and try again.\n"
+        else:
+            # No JSON found, assume it is the final synthesized answer
+            return response
+            
+    return "Error: Fast-Path ReAct loop timed out before reaching a final answer."
 
 async def orchestrate(user_request: str):
     # --- NEW: Synthesis Hook & Auto-Wipe ---
@@ -167,10 +229,16 @@ EXECUTION LOGS:
             return system_reply
             
         else:
-            # FAST-PATH: Direct Chat
-            save_chat("assistant", str(payload))
-            print("\n[Fast-Path Chat Response]\n" + str(payload))
-            return str(payload)
+            # FAST-PATH: Direct Chat via ReAct Loop
+            # Instead of just returning the static payload, we unleash the ReAct loop
+            print(f"\n[Fast-Path] Routing to ReAct Engine...")
+            
+            # We pass the original user_request so the loop knows what to solve
+            final_answer = await fast_react_loop(user_request, history)
+            
+            save_chat("assistant", final_answer)
+            print("\n[Fast-Path Chat Response]\n" + final_answer)
+            return final_answer
 
     except json.JSONDecodeError:
         # Fallback if the 4B model completely fails the schema
