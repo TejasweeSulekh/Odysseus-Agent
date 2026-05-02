@@ -10,7 +10,7 @@ def launch_dashboard():
 def launch_supervisor(goal):
     """Sends a goal to the background supervisor."""
     print(f"Dispatching goal to Supervisor: {goal}")
-    subprocess.run([sys.executable, "core/supervisor.py", goal])
+    subprocess.run([sys.executable, "-m", "core.supervisor", goal])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Odysseus Agent OS CLI")
