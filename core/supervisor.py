@@ -3,34 +3,66 @@ import json
 import sqlite3
 import os
 import re
-from core.llm_engine import ping_model
 import sys
+
+# --- Add project root to sys.path before core imports ---
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from core.llm_engine import ping_model
+from core.tools import process_tool_call
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'database', 'odysseus.db')
 
-SUPERVISOR_PROMPT = """You are Odysseus, the master AI OS Supervisor.
-You have TWO modes of operation:
+FAST_PATH_PROMPT = """You are Odysseus, a fast and helpful AI OS assistant.
+You have access to tools. 
 
-MODE 1: CHAT
-If the user is asking a general question, reply as a helpful AI assistant.
+If you DO NOT need a tool, output your final answer directly in plain text/markdown.
+If you DO need a tool, output STRICTLY a JSON block and nothing else.
 
-MODE 2: ORCHESTRATE (Task Generation)
-If the user explicitly asks you to BUILD, WRITE CODE, CREATE A FILE, or EXECUTE A SCRIPT, transition to Orchestrate Mode.
-Output ONLY a JSON array of tasks. Assign EVERY task to the 'Coder'.
+AVAILABLE TOOLS:
+- search_web(query)
+- list_directory(path)
+- read_file(filename)
+- scrape_and_clean_web(url)
+- export_to_pdf(filename, content)
+- query_memory(query)
 
-CRITICAL TASK GROUPING RULE: 
-Do NOT over-fragment tasks. If a goal requires researching a topic and THEN writing a file, combine them into a SINGLE task. This ensures the Coder has the research in its short-term memory when writing the code.
-
-Example JSON Output:
+To use a tool, use this exact format:
 ```json
-[
-    {
-        "title": "Research and Write Server",
-        "description": "Use search_web to find FastAPI documentation, then use write_file to create server.py.",
-        "assigned_agent": "Coder"
-    }
-]
-```
+{
+    "tool": "list_directory",
+    "args": {"path": "."}
+}
+"""
+
+SUPERVISOR_PROMPT = """You are Odysseus, the master AI OS Supervisor.
+Your ONLY job is to classify the user's intent and output a STRICT JSON object.
+
+You have TWO modes of operation:
+1. "chat" (Fast-Path): For general questions, brainstorming, or simple requests.
+2. "orchestrate" (Slow-Path): IF AND ONLY IF the user explicitly asks you to BUILD, WRITE CODE, CREATE A FILE, or EXECUTE A SCRIPT.
+
+CRITICAL INSTRUCTION:
+You MUST output ONLY valid JSON. No markdown formatting, no conversational filler, no backticks.
+Your output must exactly match one of these two schemas:
+
+SCHEMA 1 (Chat):
+{
+    "intent": "chat",
+    "payload": "Your helpful response to the user's question."
+}
+
+SCHEMA 2 (Orchestrate):
+{
+    "intent": "orchestrate",
+    "payload": [
+        {
+            "title": "Task Name",
+            "description": "Detailed instructions on what to do.",
+            "assigned_agent": "Coder"
+        }
+    ]
+}
 """
 
 def clean_json(text):
@@ -79,6 +111,42 @@ def extract_task_json(text):
         return potential_json
         
     return None
+
+
+async def fast_react_loop(user_command: str, history: str) -> str:
+    """Executes an in-memory Reason+Act loop."""
+    context = f"Recent History:\n{history}\n\nUSER COMMAND: {user_command}\n"
+    max_steps = 3
+    
+    for step in range(max_steps):
+        print(f"  [Fast-Path] Loop {step+1}/{max_steps} - Thinking...")
+        response = await ping_model(context, FAST_PATH_PROMPT)
+        
+        # Check if the model outputted a markdown JSON block (tool call)
+        if "```json" in response:
+            try:
+                # Extract and parse the JSON
+                json_text = response.split("```json")[1].split("```")[0].strip()
+                tool_data = json.loads(json_text)
+                
+                tool_name = tool_data.get("tool")
+                tool_args = tool_data.get("args", {})
+                
+                print(f"  [Fast-Path] Action Triggered: {tool_name}({tool_args})")
+                observation = process_tool_call(tool_name, tool_args)
+                
+                # Append the execution result to the context and let it loop again
+                context += f"\nAgent: {response}\nObservation: {observation}\n"
+                
+            except Exception as e:
+                # Healing: If the JSON is broken, feed the error back to the model
+                print(f"  [Fast-Path] Syntax Error: {e}")
+                context += f"\nAgent: {response}\nSystem Error: Invalid JSON syntax ({str(e)}). Fix it and try again.\n"
+        else:
+            # No JSON found, assume it is the final synthesized answer
+            return response
+            
+    return "Error: Fast-Path ReAct loop timed out before reaching a final answer."
 
 async def orchestrate(user_request: str):
     # --- NEW: Synthesis Hook & Auto-Wipe ---
@@ -135,33 +203,49 @@ EXECUTION LOGS:
     if not raw_response or raw_response.strip() == "":
         return "Error: Local LLM returned an empty response."
 
-    json_str = extract_task_json(raw_response)
-    
-    if json_str:
-        try:
-            tasks = json.loads(json_str)
+    # --- Deterministic JSON Routing ---
+    try:
+        # Clean potential markdown backticks just in case the model hallucinates them
+        clean_response = raw_response.replace("```json", "").replace("```", "").strip()
+        parsed_data = json.loads(clean_response)
+        
+        intent = parsed_data.get("intent", "chat")
+        payload = parsed_data.get("payload", "I could not process that request.")
+
+        if intent == "orchestrate" and isinstance(payload, list):
+            # SLOW-PATH: Push to Kanban
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
-            for task in tasks:
+            for task in payload:
                 cursor.execute(
                     "INSERT INTO tasks (title, description, status, assigned_agent) VALUES (?, ?, ?, ?)",
-                    (task['title'], task['description'], 'Backlog', task['assigned_agent'])
+                    (task.get('title', 'Untitled'), task.get('description', ''), 'Backlog', task.get('assigned_agent', 'Coder'))
                 )
             conn.commit()
             conn.close()
             
-            system_reply = f"[SYSTEM] Agentic Mode Triggered. Dispatched {len(tasks)} tasks to the Kanban board."
+            system_reply = f"[SYSTEM] Agentic Mode Triggered. Dispatched {len(payload)} tasks to the Kanban board."
             save_chat("assistant", system_reply)
             print(f"\n{system_reply}")
             return system_reply
             
-        except json.JSONDecodeError:
-            print("\n[Watchdog] Found array brackets, but JSON was invalid. Falling back to chat.")
-            pass 
+        else:
+            # FAST-PATH: Direct Chat via ReAct Loop
+            # Instead of just returning the static payload, we unleash the ReAct loop
+            print(f"\n[Fast-Path] Routing to ReAct Engine...")
             
-    save_chat("assistant", raw_response)
-    print("\n[Chat Mode Response]\n" + raw_response)
-    return raw_response
+            # We pass the original user_request so the loop knows what to solve
+            final_answer = await fast_react_loop(user_request, history)
+            
+            save_chat("assistant", final_answer)
+            print("\n[Fast-Path Chat Response]\n" + final_answer)
+            return final_answer
+
+    except json.JSONDecodeError:
+        # Fallback if the 4B model completely fails the schema
+        print("\n[Watchdog] Supervisor failed to output valid JSON. Falling back to raw text.")
+        save_chat("assistant", raw_response)
+        return raw_response
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

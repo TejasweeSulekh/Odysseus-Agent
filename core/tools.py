@@ -2,15 +2,33 @@ import os
 import subprocess
 import json
 import warnings
+import requests
+from core.memory import query_memory
+from core.thick_tools import scrape_and_clean_web, export_to_pdf
 
 # Suppress the noisy renaming warning from the duckduckgo backend
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="duckduckgo_search")
 
 from ddgs import DDGS
 
+MCP_SERVER_URL = "http://127.0.0.1:8000"
+API_KEY = "odysseus-fde-secret-key-123"
+
 # Ensure the workspace exists and lock tools to this directory
 WORKSPACE_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'workspace'))
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+def call_mcp_endpoint(endpoint: str, args: dict) -> str:
+    """Helper to send secure requests to the isolated tool server."""
+    try:
+        payload = {"api_key": API_KEY, "args": args}
+        response = requests.post(f"{MCP_SERVER_URL}{endpoint}", json=payload, timeout=20)
+        response.raise_for_status()
+        return response.json().get("result", "No result returned.")
+    except requests.exceptions.ConnectionError:
+        return "ERROR: MCP Server is unreachable. Is uvicorn running on port 8000?"
+    except Exception as e:
+        return f"ERROR calling MCP Server: {str(e)}"
 
 def write_file(filename: str, content: str) -> str:
     """Writes content to a file inside the workspace."""
@@ -102,6 +120,14 @@ def process_tool_call(tool_name: str, tool_args: dict) -> str:
         return list_directory(tool_args.get("path", "."))
     elif tool_name == "search_web":
         return search_web(tool_args.get("query", ""))
+        
+    # --- ISOLATED MCP / CLOUD TOOLS ---
+    elif tool_name == "query_memory":
+        return call_mcp_endpoint("/mcp/query_memory", tool_args)
+    elif tool_name == "scrape_and_clean_web":
+        return call_mcp_endpoint("/mcp/scrape", tool_args)
+    elif tool_name == "export_to_pdf":
+        return call_mcp_endpoint("/mcp/pdf", tool_args)
     else:
         return f"ERROR: Unknown tool '{tool_name}'."
     

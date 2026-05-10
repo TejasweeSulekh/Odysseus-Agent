@@ -150,6 +150,10 @@ class KanbanScreen(Screen):
             with VerticalScroll(id="side-panel"):
                 yield Label("SYSTEM TELEMETRY", classes="panel-header")
                 yield Label("CPU --% | RAM --GB", id="telemetry-data")
+                # --- NEW: LLM Telemetry UI ---
+                yield Label("LLM PERFORMANCE", classes="panel-header")
+                yield Label("-- T/s | -- Tokens", id="llm-telemetry-data")
+                
                 yield Label("LOGS", classes="panel-header")
                 yield Markdown("Select a task to view execution details.", id="detail-content")
         yield Footer()
@@ -194,8 +198,16 @@ class KanbanScreen(Screen):
         self.is_synthesizing = False
 
     def update_telemetry(self) -> None:
+        # Import our new function here as well
+        from core.telemetry import get_llm_metrics
+        
+        # Update Hardware
         m = get_system_metrics()
         self.query_one("#telemetry-data", Label).update(f"CPU: {m['cpu']}% | RAM: {m['ram_used']}GB / {m['ram_total']}GB")
+        
+        # Update LLM Performance
+        l = get_llm_metrics()
+        self.query_one("#llm-telemetry-data", Label).update(f"Speed: {l['tps']} T/s | Last burst: {l['tokens']} tok ({l['duration']}s)")
 
     def on_task_card_selected(self, message: TaskCard.Selected) -> None:
         conn = sqlite3.connect(DB_PATH)

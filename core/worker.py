@@ -5,6 +5,10 @@ import asyncio
 import re
 import subprocess
 import json
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from core.llm_engine import ping_model
 from core.tools import process_tool_call
 
